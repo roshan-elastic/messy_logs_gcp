@@ -103,6 +103,22 @@ Override the region used for Dataflow workers only. Useful if your primary regio
 
 ---
 
+## Gotchas
+
+### `logs.otel` silently drops documents that don't match OTel schema
+
+`logs.otel` expects data in OpenTelemetry conventions. When documents don't match — for example, raw GCP Cloud Run logs with fields like `httpRequest`, `severity`, `logName`, and `resource.labels.*` — the ingest pipeline routes them to the stream's failure store instead of rejecting them. The bulk API still returns `201 created`, so there is **no visible error**. The documents simply never appear in Discover or the Streams UI.
+
+Specifically, `logs.otel` remaps:
+- `message` → `body.text`
+- `host.name` → `resource.attributes.host.name`
+
+Any fields outside the expected OTel structure are silently discarded.
+
+**If in doubt, send to `logs.ecs`.** It accepts raw GCP log structure as-is, preserves all fields (`message`, `httpRequest.*`, `severity`, `logName`, `trace`, etc.), and documents reliably arrive in the stream.
+
+---
+
 ## Deploy
 
 ```bash
