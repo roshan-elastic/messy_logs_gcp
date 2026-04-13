@@ -169,8 +169,9 @@ resource "google_pubsub_topic" "logs_errors" {
 # ──────────────────────────────────────────────
 
 resource "google_cloud_run_v2_service" "hello_world" {
-  name     = "hello-world"
-  location = var.region
+  name                = "hello-world"
+  location            = var.region
+  deletion_protection = false
 
   template {
     containers {
