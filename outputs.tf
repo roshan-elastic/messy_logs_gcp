@@ -52,3 +52,8 @@ output "udf_gcs_path" {
   description = "GCS path to the index function UDF used by the Dataflow job"
   value       = "gs://${google_storage_bucket.dataflow.name}/${google_storage_bucket_object.index_fn.name}"
 }
+
+output "log_generator_url" {
+  description = "Public URL of the log-generator Cloud Function — open in a browser to generate demo logs"
+  value       = google_cloudfunctions2_function.log_generator.service_config[0].uri
+}

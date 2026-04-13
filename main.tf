@@ -8,6 +8,10 @@ terraform {
       source  = "hashicorp/google-beta"
       version = "~> 6.0"
     }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.0"
+    }
   }
 }
 
@@ -52,6 +56,21 @@ resource "google_project_service" "storage" {
 
 resource "google_project_service" "compute" {
   service            = "compute.googleapis.com"
+  disable_on_destroy = false
+}
+
+resource "google_project_service" "cloudfunctions" {
+  service            = "cloudfunctions.googleapis.com"
+  disable_on_destroy = false
+}
+
+resource "google_project_service" "cloudbuild" {
+  service            = "cloudbuild.googleapis.com"
+  disable_on_destroy = false
+}
+
+resource "google_project_service" "artifactregistry" {
+  service            = "artifactregistry.googleapis.com"
   disable_on_destroy = false
 }
 
@@ -251,4 +270,62 @@ resource "google_dataflow_flex_template_job" "pubsub_to_elasticsearch" {
     google_pubsub_subscription.logs_input_sub,
     google_pubsub_topic.logs_errors,
   ]
+}
+
+# ──────────────────────────────────────────────
+# Cloud Function — Log Generator
+# ──────────────────────────────────────────────
+
+# Zip the function source and upload to GCS
+data "archive_file" "log_generator" {
+  type        = "zip"
+  source_dir  = "${path.module}/functions/log_generator"
+  output_path = "${path.module}/functions/log_generator.zip"
+}
+
+resource "google_storage_bucket_object" "log_generator_source" {
+  name   = "functions/log_generator-${data.archive_file.log_generator.output_md5}.zip"
+  bucket = google_storage_bucket.dataflow.name
+  source = data.archive_file.log_generator.output_path
+}
+
+resource "google_cloudfunctions2_function" "log_generator" {
+  name     = "log-generator"
+  location = var.region
+
+  build_config {
+    runtime     = "python312"
+    entry_point = "log_generator"
+    source {
+      storage_source {
+        bucket = google_storage_bucket.dataflow.name
+        object = google_storage_bucket_object.log_generator_source.name
+      }
+    }
+  }
+
+  service_config {
+    max_instance_count = 5
+    available_memory   = "256M"
+    timeout_seconds    = 60
+    # Allow unauthenticated browser access
+    ingress_settings               = "ALLOW_ALL"
+    all_traffic_on_latest_revision = true
+  }
+
+  depends_on = [
+    google_project_service.cloudfunctions,
+    google_project_service.cloudbuild,
+    google_project_service.artifactregistry,
+    google_storage_bucket_object.log_generator_source,
+  ]
+}
+
+# Make the function publicly accessible (no auth required for browser)
+resource "google_cloud_run_v2_service_iam_member" "log_generator_public" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloudfunctions2_function.log_generator.name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
 }
