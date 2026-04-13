@@ -1,0 +1,22 @@
+# Copy this file to terraform.tfvars and fill in your values.
+# Do NOT commit terraform.tfvars — it contains secrets.
+
+project_id = "your-gcp-project-id"
+
+region = "us-central1"
+
+# Elastic Cloud cluster endpoint, e.g.:
+# https://<cluster-id>.es.<region>.gcp.elastic-cloud.com
+elasticsearch_connection_url = "https://<cluster-id>.es.us-central1.gcp.elastic-cloud.com"
+
+# Base64-encoded API key created in Kibana (Stack Management → API Keys).
+# Encode with: echo -n "id:api_key" | base64
+elasticsearch_api_key = "base64encodedapikey=="
+
+# Elasticsearch index to write logs into. Defaults to "logs.ecs" if omitted.
+# Examples: logs.ecs, logs.otel, my-custom-index
+elasticsearch_index = "logs.ecs"
+
+# Optional: override the region for Dataflow workers only.
+# Useful if us-central1 has capacity issues. Leave empty to use the same as region.
+# dataflow_region = "us-east1"
