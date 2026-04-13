@@ -104,6 +104,61 @@ Override the region used for Dataflow workers only. Useful if your primary regio
 
 ---
 
+## How Dataflow works in this pipeline
+
+This pipeline uses the Google-provided **[Pub/Sub to Elasticsearch](https://cloud.google.com/dataflow/docs/guides/templates/provided/pubsub-to-elasticsearch)** Flex Template (`PubSub_to_Elasticsearch_Flex`). It is a managed, streaming Dataflow job that reads messages from a Pub/Sub subscription and writes them to Elasticsearch as documents with no custom Java or Beam code required.
+
+### What the template does by default
+
+Out of the box the template creates a data stream named `logs-gcp.DATASET-NAMESPACE` in Elasticsearch (e.g. `logs-gcp.pubsub-default`), controlled by the `dataset` and `namespace` parameters.
+
+### How this project overrides the target index
+
+Rather than using the default `logs-gcp.*` stream, this project uses the template's **JavaScript Index UDF** feature to route every document to the Elasticsearch data stream of your choice (configured via `elasticsearch_index` in `terraform.tfvars`, defaulting to `logs.ecs`).
+
+The UDF lives at `udfs/index_fn.js` and is uploaded to GCS at deploy time:
+
+```javascript
+function getIndex(document) {
+  return "logs.ecs"; // or whatever elasticsearch_index is set to
+}
+```
+
+Terraform wires it into the Dataflow job via two parameters:
+
+```hcl
+javaScriptIndexFnGcsPath = "gs://<bucket>/udfs/index_fn.js"
+javaScriptIndexFnName    = "getIndex"
+```
+
+This tells the template to call `getIndex()` for every document and use the return value as the `_index` for the Elasticsearch bulk request, overriding the default `logs-gcp.*` stream entirely.
+
+### Key template parameters configured
+
+| Parameter | Value | Why |
+|---|---|---|
+| `inputSubscription` | `logs-input-sub` | The Pub/Sub subscription receiving Cloud Run logs via the Log Router sink |
+| `connectionUrl` | Your Elastic Cloud HTTPS endpoint | Where to write documents |
+| `apiKey` | Base64-encoded API key | Authentication |
+| `errorOutputTopic` | `logs-errors` Pub/Sub topic | Failed records go here instead of being silently dropped |
+| `javaScriptIndexFnGcsPath` | GCS path to `index_fn.js` | Points the template at the index UDF |
+| `javaScriptIndexFnName` | `getIndex` | The function name to call in the UDF |
+| `javascriptTextTransformGcsPath` | GCS path to `transform_fn.js` | Optional document transform UDF |
+| `bulkInsertMethod` | `CREATE` | Required for Elasticsearch data streams, which only accept `create` operations |
+| `workerMachineType` | `e2-standard-2` | Avoids capacity issues in shared GCP zones |
+
+### Changing the target data stream
+
+To send to a different Elasticsearch data stream, update `elasticsearch_index` in `terraform.tfvars` and re-run `terraform apply`. The UDF file is regenerated and the Dataflow job is replaced automatically.
+
+```hcl
+elasticsearch_index = "logs.otel"  # or any valid data stream name
+```
+
+> **Note:** Not all data streams accept arbitrary document shapes. See the Gotchas section below before switching away from `logs.ecs`.
+
+---
+
 ## Gotchas
 
 ### `logs.otel` silently drops documents that don't match OTel schema
