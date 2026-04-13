@@ -321,6 +321,15 @@ resource "google_cloudfunctions2_function" "log_generator" {
   ]
 }
 
+# Allow the Cloud Functions build robot to read source from the GCS bucket
+resource "google_storage_bucket_iam_member" "gcf_reader" {
+  bucket = google_storage_bucket.dataflow.name
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:service-${data.google_project.project.number}@gcf-admin-robot.iam.gserviceaccount.com"
+
+  depends_on = [google_project_service.cloudfunctions]
+}
+
 # Make the function publicly accessible (no auth required for browser)
 resource "google_cloud_run_v2_service_iam_member" "log_generator_public" {
   project  = var.project_id
