@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 
 import pg8000.native
+from google.cloud.sql.connector import Connector
 
 
 PRODUCTS = ["SKU-1001-HEADPHONES", "SKU-2042-LAPTOP", "SKU-3017-KEYBOARD", "SKU-4088-MONITOR"]
@@ -20,18 +21,20 @@ def _log(severity, message, **fields):
 
 
 def get_db_connection():
-    """Connect to Cloud SQL PostgreSQL via the Unix socket mounted by Cloud Run."""
-    connection_name = os.environ["CLOUD_SQL_CONNECTION_NAME"]
-    return pg8000.native.Connection(
+    """Connect to Cloud SQL PostgreSQL via the Cloud SQL Python Connector."""
+    connector = Connector()
+    return connector.connect(
+        os.environ["CLOUD_SQL_CONNECTION_NAME"],
+        "pg8000",
         user=os.environ["DB_USER"],
         password=os.environ["DB_PASS"],
-        database=os.environ["DB_NAME"],
-        unix_sock=f"/cloudsql/{connection_name}/.s.PGSQL.5432",
+        db=os.environ["DB_NAME"],
     )
 
 
 def ensure_table(conn):
-    conn.run("""
+    cur = conn.cursor()
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
             id          SERIAL PRIMARY KEY,
             session_id  TEXT        NOT NULL,
@@ -42,35 +45,49 @@ def ensure_table(conn):
             created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
     """)
+    conn.commit()
+    cur.close()
 
 
 def insert_events(conn, session_id, user, events):
     """Bulk-insert session events into the database."""
+    cur = conn.cursor()
     for e in events:
-        conn.run(
+        cur.execute(
             "INSERT INTO sessions (session_id, user_id, event, product_id, amount) "
-            "VALUES (:sid, :uid, :evt, :pid, :amt)",
-            sid=session_id,
-            uid=user,
-            evt=e["message"],
-            pid=e.get("product_id"),
-            amt=e.get("cart_total") or e.get("order_total"),
+            "VALUES (%s, %s, %s, %s, %s)",
+            (
+                session_id,
+                user,
+                e["message"],
+                e.get("product_id"),
+                e.get("cart_total") or e.get("order_total"),
+            ),
         )
+    conn.commit()
+    cur.close()
 
 
 def recent_sessions(conn, limit=5):
     """Return the most recent session rows for display."""
-    rows = conn.run(
+    cur = conn.cursor()
+    cur.execute(
         "SELECT session_id, user_id, event, product_id, amount, created_at "
-        "FROM sessions ORDER BY created_at DESC LIMIT :lim",
-        lim=limit,
+        "FROM sessions ORDER BY created_at DESC LIMIT %s",
+        (limit,),
     )
     cols = ["session_id", "user_id", "event", "product_id", "amount", "created_at"]
-    return [dict(zip(cols, row)) for row in rows]
+    rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+    cur.close()
+    return rows
 
 
 def session_count(conn):
-    return conn.run("SELECT COUNT(*) FROM sessions")[0][0]
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM sessions")
+    count = cur.fetchone()[0]
+    cur.close()
+    return count
 
 
 @functions_framework.http

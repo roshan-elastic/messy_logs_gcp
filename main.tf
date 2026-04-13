@@ -387,19 +387,11 @@ resource "google_cloudfunctions2_function" "log_generator" {
     ingress_settings               = "ALLOW_ALL"
     all_traffic_on_latest_revision = true
 
-    # Cloud SQL socket is automatically available when this is set
-    vpc_connector_egress_settings = "ALL_TRAFFIC"
-
     environment_variables = {
       CLOUD_SQL_CONNECTION_NAME = google_sql_database_instance.demo.connection_name
       DB_NAME                   = google_sql_database.demo.name
       DB_USER                   = google_sql_user.function_user.name
       DB_PASS                   = random_password.db_password.result
-    }
-
-    # Mounts the Cloud SQL Auth Proxy socket inside the container
-    annotations = {
-      "run.googleapis.com/cloudsql-instances" = google_sql_database_instance.demo.connection_name
     }
   }
 
