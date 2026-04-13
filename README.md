@@ -1,6 +1,6 @@
 # GCP Cloud Run Logs → Pub/Sub → Dataflow → Elasticsearch
 
-Streams structured logs from a Cloud Run service through Pub/Sub and Dataflow into an Elasticsearch `logs.ecs` index.
+Streams structured logs from a Cloud Run service through Pub/Sub and Dataflow into an Elasticsearch `logs.ecs` data stream.
 
 ## Architecture
 
@@ -9,73 +9,113 @@ Cloud Run → Cloud Logging → Log Router Sink → Pub/Sub Topic (logs-input)
   → Pub/Sub Subscription → Dataflow (PubSub_to_Elasticsearch_Flex) → Elastic Cloud (logs.ecs)
 ```
 
-Failed records are routed to a `logs-errors` Pub/Sub topic. A GCS bucket holds Dataflow temp files and the index function UDF.
+Failed records are routed to a `logs-errors` Pub/Sub topic. A GCS bucket holds Dataflow temp files and the index UDF.
 
 ---
 
 ## Prerequisites
 
-### 1. Install gcloud CLI (macOS)
-
-Install the Google Cloud SDK via Homebrew:
+### 1. Install gcloud CLI
 
 ```bash
 brew install --cask google-cloud-sdk
 ```
 
-Verify the installation:
-
-```bash
-gcloud --version
-```
-
-### 2. Authenticate and configure your project
-
-Initialize gcloud and select your GCP project:
+### 2. Authenticate with GCP
 
 ```bash
 gcloud init
-```
-
-Authenticate application default credentials (required by the Terraform Google provider):
-
-```bash
 gcloud auth application-default login
+gcloud config set project YOUR_PROJECT_ID
 ```
 
-Set your active project:
+### 3. Install Terraform
 
 ```bash
-gcloud config set project YOUR_PROJECT_ID
+brew tap hashicorp/tap
+brew install hashicorp/tap/terraform
 ```
 
 ---
 
-## Usage
+## Configuration
 
-1. Copy the example tfvars file and fill in your values:
+Copy the example vars file and fill in your values:
 
-   ```bash
-   cp terraform.tfvars.example terraform.tfvars
-   ```
+```bash
+cp terraform.tfvars.example terraform.tfvars
+```
 
-2. Initialize Terraform:
+Then edit `terraform.tfvars`. **This file contains secrets — it is gitignored and must never be committed.**
 
-   ```bash
-   terraform init
-   ```
+### Required values
 
-3. Review the plan:
+#### `project_id`
+Your GCP project ID. Find it in the [GCP Console](https://console.cloud.google.com) or run:
+```bash
+gcloud projects list
+```
+```hcl
+project_id = "my-gcp-project-123"
+```
 
-   ```bash
-   terraform plan -var-file=terraform.tfvars
-   ```
+#### `region`
+GCP region to deploy all resources into. `us-central1` is recommended as the Dataflow template is hosted there.
+```hcl
+region = "us-central1"
+```
 
-4. Apply:
+#### `elasticsearch_connection_url`
+The HTTPS endpoint for your Elastic Cloud cluster. Find it in Kibana under **Stack Management → Elasticsearch → Endpoints**, or in the Elastic Cloud console under your deployment's **Connections** tab.
+```hcl
+elasticsearch_connection_url = "https://<cluster-id>.es.us-central1.gcp.elastic-cloud.com"
+```
 
-   ```bash
-   terraform apply -var-file=terraform.tfvars
-   ```
+#### `elasticsearch_api_key`
+A base64-encoded Elasticsearch API key used by Dataflow to authenticate writes. Create one in Kibana under **Stack Management → API Keys**, then encode it:
+```bash
+echo -n "your-key-id:your-api-key-value" | base64
+```
+Paste the output here:
+```hcl
+elasticsearch_api_key = "eW91ci1rZXktaWQ6eW91ci1hcGkta2V5LXZhbHVl"
+```
+
+### Optional values
+
+#### `elasticsearch_index`
+The Elasticsearch data stream to write logs into. Defaults to `logs.ecs` if omitted.
+
+| Value | Description |
+|---|---|
+| `logs.ecs` | ECS-schema stream — recommended for GCP logs. Preserves all GCP fields. |
+| `logs.otel` | OTel-schema stream — remaps fields to OTel conventions. Not recommended for raw GCP logs. |
+
+```hcl
+elasticsearch_index = "logs.ecs"
+```
+
+#### `dataflow_region`
+Override the region used for Dataflow workers only. Useful if your primary region has capacity constraints. Leave commented out to use the same value as `region`.
+```hcl
+# dataflow_region = "us-east1"
+```
+
+---
+
+## Deploy
+
+```bash
+terraform init
+terraform plan
+terraform apply
+```
+
+## Tear down
+
+```bash
+terraform destroy
+```
 
 ---
 
@@ -83,19 +123,11 @@ gcloud config set project YOUR_PROJECT_ID
 
 ```
 wired-streams-gcp/
-├── main.tf                   - all GCP resources
-├── variables.tf              - project_id, region, ES credentials, etc.
-├── outputs.tf                - useful output values
-├── terraform.tfvars.example  - template for user values (no secrets)
+├── main.tf                   - all GCP resources (Cloud Run, Pub/Sub, Dataflow, GCS, IAM)
+├── variables.tf              - variable definitions
+├── outputs.tf                - useful post-deploy output values
+├── terraform.tfvars.example  - template — copy to terraform.tfvars and fill in secrets
+├── terraform.tfvars          - your real values (gitignored, never commit)
 └── udfs/
-    └── index_fn.js           - JS UDF: always returns "logs.ecs"
+    └── index_fn.js           - Dataflow UDF: routes all documents to the configured index
 ```
-
-## Key Variables
-
-| Variable | Description |
-|---|---|
-| `project_id` | GCP project ID |
-| `region` | GCP region (default: `us-central1`) |
-| `elasticsearch_connection_url` | Elastic Cloud CloudID format |
-| `elasticsearch_api_key` | Base64-encoded API key (sensitive) |
