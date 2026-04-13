@@ -12,6 +12,10 @@ terraform {
       source  = "hashicorp/archive"
       version = "~> 2.0"
     }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.0"
+    }
   }
 }
 
@@ -71,6 +75,16 @@ resource "google_project_service" "cloudbuild" {
 
 resource "google_project_service" "artifactregistry" {
   service            = "artifactregistry.googleapis.com"
+  disable_on_destroy = false
+}
+
+resource "google_project_service" "sqladmin" {
+  service            = "sqladmin.googleapis.com"
+  disable_on_destroy = false
+}
+
+resource "google_project_service" "secretmanager" {
+  service            = "secretmanager.googleapis.com"
   disable_on_destroy = false
 }
 
@@ -182,7 +196,12 @@ resource "google_cloud_run_v2_service_iam_member" "hello_world_public" {
 resource "google_logging_project_sink" "cloud_run_to_pubsub" {
   name        = "cloud-run-to-pubsub"
   destination = "pubsub.googleapis.com/${google_pubsub_topic.logs_input.id}"
-  filter      = "resource.type=\"cloud_run_revision\""
+
+  # Capture Cloud Run logs (hello-world + log-generator function) AND Cloud SQL query logs
+  filter = <<-EOT
+    resource.type="cloud_run_revision"
+    OR (resource.type="cloudsql_database" AND log_id("cloudsql.googleapis.com/postgres.log"))
+  EOT
 
   unique_writer_identity = true
 
@@ -273,6 +292,63 @@ resource "google_dataflow_flex_template_job" "pubsub_to_elasticsearch" {
 }
 
 # ──────────────────────────────────────────────
+# Cloud SQL — PostgreSQL demo database
+# ──────────────────────────────────────────────
+
+resource "random_password" "db_password" {
+  length  = 24
+  special = false
+}
+
+resource "google_sql_database_instance" "demo" {
+  name             = "demo-db"
+  database_version = "POSTGRES_15"
+  region           = var.region
+
+  settings {
+    tier = "db-f1-micro"
+
+    database_flags {
+      name  = "log_statement"
+      value = "all"
+    }
+    database_flags {
+      name  = "log_duration"
+      value = "on"
+    }
+    database_flags {
+      name  = "log_min_duration_statement"
+      value = "0"
+    }
+
+    insights_config {
+      query_insights_enabled = true
+    }
+  }
+
+  deletion_protection = false
+  depends_on          = [google_project_service.sqladmin]
+}
+
+resource "google_sql_database" "demo" {
+  name     = "demo"
+  instance = google_sql_database_instance.demo.name
+}
+
+resource "google_sql_user" "function_user" {
+  name     = "log-generator"
+  instance = google_sql_database_instance.demo.name
+  password = random_password.db_password.result
+}
+
+# Grant the default Compute SA (used by Cloud Functions) Cloud SQL access
+resource "google_project_iam_member" "cloudsql_client" {
+  project = var.project_id
+  role    = "roles/cloudsql.client"
+  member  = local.dataflow_sa
+}
+
+# ──────────────────────────────────────────────
 # Cloud Function — Log Generator
 # ──────────────────────────────────────────────
 
@@ -308,9 +384,23 @@ resource "google_cloudfunctions2_function" "log_generator" {
     max_instance_count = 5
     available_memory   = "256M"
     timeout_seconds    = 60
-    # Allow unauthenticated browser access
     ingress_settings               = "ALLOW_ALL"
     all_traffic_on_latest_revision = true
+
+    # Cloud SQL socket is automatically available when this is set
+    vpc_connector_egress_settings = "ALL_TRAFFIC"
+
+    environment_variables = {
+      CLOUD_SQL_CONNECTION_NAME = google_sql_database_instance.demo.connection_name
+      DB_NAME                   = google_sql_database.demo.name
+      DB_USER                   = google_sql_user.function_user.name
+      DB_PASS                   = random_password.db_password.result
+    }
+
+    # Mounts the Cloud SQL Auth Proxy socket inside the container
+    annotations = {
+      "run.googleapis.com/cloudsql-instances" = google_sql_database_instance.demo.connection_name
+    }
   }
 
   depends_on = [
@@ -318,6 +408,9 @@ resource "google_cloudfunctions2_function" "log_generator" {
     google_project_service.cloudbuild,
     google_project_service.artifactregistry,
     google_storage_bucket_object.log_generator_source,
+    google_sql_database_instance.demo,
+    google_sql_user.function_user,
+    google_project_iam_member.cloudsql_client,
   ]
 }
 

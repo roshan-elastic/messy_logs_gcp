@@ -22,3 +22,4 @@ override.tf.json
 
 # macOS
 .DS_Store
+functions/log_generator.zip

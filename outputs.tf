@@ -57,3 +57,18 @@ output "log_generator_url" {
   description = "Public URL of the log-generator Cloud Function — open in a browser to generate demo logs"
   value       = google_cloudfunctions2_function.log_generator.service_config[0].uri
 }
+
+output "cloudsql_instance_name" {
+  description = "Cloud SQL instance name"
+  value       = google_sql_database_instance.demo.name
+}
+
+output "cloudsql_connection_name" {
+  description = "Cloud SQL connection name (project:region:instance) used by the Cloud Function"
+  value       = google_sql_database_instance.demo.connection_name
+}
+
+output "cloudsql_console_url" {
+  description = "GCP Console URL for the Cloud SQL instance"
+  value       = "https://console.cloud.google.com/sql/instances/${google_sql_database_instance.demo.name}/overview?project=${var.project_id}"
+}
