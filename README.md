@@ -4,13 +4,62 @@ Streams structured logs from a Cloud Run service, a Cloud Function, and a Cloud 
 
 ## Architecture
 
-```
-Cloud Run        ─┐
-Cloud Function   ─┼─→ Cloud Logging → Log Router Sink → Pub/Sub (logs-input)
-Cloud SQL (pg)   ─┘       → Dataflow (PubSub_to_Elasticsearch_Flex) → Elastic Cloud (logs.ecs)
+```mermaid
+flowchart TD
+    subgraph GCP_Sources["GCP — Log Sources"]
+        CR["☁️ Cloud Run\nhello-world container\n(HTTP access logs)"]
+        CF["⚡ Cloud Function\nlog-generator\n(structured JSON stdout)"]
+        SQL["🗄️ Cloud SQL\nPostgreSQL 15\n(postgres.log — all statements)"]
+    end
+
+    subgraph GCP_Pipeline["GCP — Log Pipeline"]
+        CL["📋 Cloud Logging\n(centralised log store)"]
+        SINK["🔀 Log Router Sink\nfilter: cloud_run_revision\nOR cloudsql_database"]
+        PS_IN["📨 Pub/Sub Topic\nlogs-input"]
+        SUB["📬 Pub/Sub Subscription\nlogs-input-sub"]
+
+        subgraph Dataflow["Dataflow — PubSub_to_Elasticsearch_Flex"]
+            UDF_T["🔧 Transform UDF\ntransform_fn.js\n(expand GCP log envelope)"]
+            UDF_I["🏷️ Index UDF\nindex_fn.js\n(returns target stream name)"]
+            WRITER["✍️ WriteToElasticsearch\nbulkInsertMethod: CREATE"]
+        end
+
+        GCS["🪣 GCS Bucket\nDataflow staging + UDFs"]
+        PS_ERR["⚠️ Pub/Sub Topic\nlogs-errors\n(failed records)"]
+    end
+
+    subgraph Elastic["Elastic Cloud"]
+        INGEST["⚙️ Ingest Pipeline\nlogs@stream.processing"]
+        STREAM["📊 Elasticsearch\nlogs.ecs data stream"]
+    end
+
+    CR -- "run.googleapis.com/requests\n(HTTP access log)" --> CL
+    CF -- "run.googleapis.com/stdout\n(structured JSON events)\nrun.googleapis.com/requests" --> CL
+    SQL -- "cloudsql.googleapis.com/postgres.log\n(raw SQL statements)" --> CL
+
+    CL --> SINK
+    SINK --> PS_IN
+    PS_IN --> SUB
+    SUB --> UDF_T
+    GCS -. "UDF files" .-> UDF_T
+    GCS -. "UDF files" .-> UDF_I
+    UDF_T --> UDF_I
+    UDF_I --> WRITER
+    WRITER -- "success" --> INGEST
+    WRITER -- "failure" --> PS_ERR
+    INGEST --> STREAM
 ```
 
-Failed records are routed to a `logs-errors` Pub/Sub topic. A GCS bucket holds Dataflow temp files, UDFs, and the function source.
+**Log types captured per browser request to the Cloud Function:**
+
+| Source | Log name | Content |
+|---|---|---|
+| Cloud Run (hello-world) | `run.googleapis.com/requests` | HTTP method, URL, status, latency, remoteIp |
+| Cloud Function (log-generator) | `run.googleapis.com/stdout` | Structured JSON: session_id, user_id, event, severity |
+| Cloud Function (log-generator) | `run.googleapis.com/requests` | HTTP access log for the function invocation itself |
+| Cloud SQL | `cloudsql.googleapis.com/postgres.log` | Raw SQL: `CREATE TABLE`, `INSERT INTO sessions`, `SELECT` |
+
+Failed records are routed to a `logs-errors` Pub/Sub topic. A GCS bucket holds Dataflow temp files, UDF source files, and the Cloud Function zip.
 
 ---
 
